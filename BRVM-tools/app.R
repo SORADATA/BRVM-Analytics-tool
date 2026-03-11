@@ -48,39 +48,55 @@ mots_a_supprimer <- tibble(word = c(
 ))
 all_stopwords_base <- bind_rows(stopwords_fr, mots_a_supprimer) %>% distinct()
 
-# ===================== FONCTION DE PARSING "BULLETPROOF" =====================
+# ===================== FONCTION DE PARSING "BULLETPROOF FCFA" =====================
 extract_finance_syscohada <- function(text_full) {
   lines <- unlist(strsplit(text_full, "\n"))
   
   parse_metric <- function(pattern) {
     idx <- grep(pattern, lines, ignore.case = TRUE)
     if(length(idx) > 0) {
-      line <- lines[idx[1]]
-      matches <- stringr::str_extract_all(line, "\\(?[0-9]{1,3}(?:[\\s\\.\\,][0-9]{3})+\\)?")[[1]]
-      if(length(matches) > 0) {
-        val_str <- matches[1]
-        is_neg <- grepl("\\(", val_str) || grepl("-", val_str)
-        val_num <- as.numeric(stringr::str_replace_all(val_str, "[^0-9]", ""))
-        if(is_neg) val_num <- -val_num
-        return(val_num)
+      # On boucle sur les lignes trouvées pour être sûr
+      for(i in idx) {
+        line <- lines[i]
+        # On extrait les blocs de chiffres
+        matches <- stringr::str_extract_all(line, "\\(?[0-9]{1,3}(?:[\\s\\.\\,][0-9]{3})+\\)?")[[1]]
+        
+        if(length(matches) > 0) {
+          for(val_str in matches) {
+            is_neg <- grepl("\\(", val_str) || grepl("-", val_str)
+            val_num <- as.numeric(stringr::str_replace_all(val_str, "[^0-9]", ""))
+            if(is_neg) val_num <- -val_num
+            
+            # --- LE FILTRE FCFA ---
+            # On ignore les chiffres < 100 000 (ce sont des numéros de notes ou des années 2024/2025)
+            if(abs(val_num) > 100000) {
+              return(val_num)
+            }
+          }
+        }
       }
     }
     return(0)
   }
   
+  # Ciblage ultra-précis des libellés
   res <- list(
-    ca = parse_metric("Chiffre d.Affaires total"),
-    rn = parse_metric("R.sultat net de l.exercice"), 
+    ca = parse_metric("Chiffre d.Affaires"),
+    rn = parse_metric("sultat net de l.exercice"), # "sultat" couvre Résultat avec ou sans accent
     stocks = parse_metric("Stocks nets"),
     creances = parse_metric("Cr.ances et emplois"),
-    passif_hao = parse_metric("Passif circulant H\\.A\\.O"),
-    passif_autres = parse_metric("Autres Dettes"),
+    passif_circulant = parse_metric("TOTAL PASSIF CIRCULANT|Total Passif Circulant"),
     caf = parse_metric("Capacit. d.autofinancement"),
     cfo = parse_metric("Flux de tr.sorerie des activit.s"),
     treso_nette = parse_metric("Tr.sorerie Nette au 31 d.cembre") 
   )
   
-  res$passif_circulant <- res$passif_hao + res$passif_autres
+  # Si le Total Passif Circulant n'est pas lu, on fait un "Fallback" sur les fournisseurs
+  if(res$passif_circulant == 0) {
+    res$passif_circulant <- parse_metric("Fournisseurs d.exploitation") + parse_metric("Autres Dettes")
+  }
+  
+  # Calculs financiers finaux
   res$bfr <- (res$stocks + res$creances) - res$passif_circulant
   res$dso <- ifelse(res$ca > 0, (res$creances / res$ca) * 360, 0)
   
